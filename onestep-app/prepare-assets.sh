@@ -6,7 +6,7 @@
 #   exploit_static   <- ../exploit/build/<PROJECT>/bin/exploit_static
 #                       （先按 docs/DEPENDENCIES.md 构建）
 #   kernelsu.ko      <- deps/kernelsu.ko（KernelSU LKM，见 deps/README.md）
-#   kernelsu.new.ko  <- deps/kernelsu.ko 的副本（load_ksu.sh 期望的名字）
+#   （kernelsu.new.ko 由 App 在私有镜像里自动生成，无需放进 assets）
 #   ksudbin          <- deps/ksudbin（KernelSU 用户态）
 #   magiskpolicy     <- deps/magiskpolicy
 #   kmsg_dumper      <- deps/kmsg_dumper
@@ -25,7 +25,6 @@ done
 
 cp -f "$EXPLOIT"          "$D/exploit_static"
 cp -f deps/kernelsu.ko    "$D/kernelsu.ko"
-cp -f deps/kernelsu.ko    "$D/kernelsu.new.ko"
 cp -f deps/ksudbin        "$D/ksudbin"
 cp -f deps/magiskpolicy   "$D/magiskpolicy"
 cp -f deps/kmsg_dumper    "$D/kmsg_dumper"

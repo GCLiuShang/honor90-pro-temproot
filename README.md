@@ -1,216 +1,261 @@
 English | [中文](README.zh-CN.md)
 
-# Honor 80 GT Privilege Escalation PoC: GhostLock (CVE-2026-43499)
+# HONOR 90 Pro (REP-AN00) Temporary Root — GhostLock + KernelSU + One-Tap App
 
-A local privilege escalation exploit for the **Honor 80 GT (AGT-AN00)**,
-CVE-2026-43499 — a use-after-free in the kernel `rtmutex` `remove_waiter`
-path — plus a companion KernelSU kernel-module loading solution.
+A verified port of the **GhostLock** exploit chain (CVE-2026-43499) to the
+**HONOR 90 Pro `REP-AN00`** (MagicOS 9.0.0.230, kernel
+`5.10.236-android12-9-g3c84ac3cc469`), with a one-tap Android app and a
+root-cause analysis of the `C1 fire` crash that used to reset the device
+roughly one attempt in three.
 
-> **This repository is a fork** of
+> **Fork lineage**:
 > [yakidango-official/GhostLock-H80GT](https://github.com/yakidango-official/GhostLock-H80GT)
-> that adds an **Honor 90 (REA-NX9), MagicOS 9.0.0.211, Android 15** port —
-> see [Port: Honor 90](#port-honor-90-rea-nx9).
+> (Honor 80 GT original PoC) → [cyrrp/honor90-ghostlock](https://github.com/cyrrp/honor90-ghostlock)
+> (Honor 90 REA-NX9 port) → **this fork** (Honor 90 Pro REP-AN00 port, fire
+> timing fixes, one-tap app, C1-fire analysis).
 
-In principle the bug and the techniques here apply to every MagicOS build
-up to 9.0.0.230. Adapted versions:
+---
 
-| MagicOS | Kernel | Status |
+## 1. How the exploit works (one page)
+
+CVE-2026-43499 is a use-after-free in the kernel `rtmutex` waiter handling.
+The exploit turns it into an arbitrary write:
+
+1. **Ghost waiter** — a `FUTEX_WAIT_REQUEUE_PI`/`FUTEX_LOCK_PI` dance ends in
+   `EDEADLK`; the waiter's `rt_mutex_waiter` is dequeued but
+   `task->pi_blocked_on` still points at it. That stale waiter lives on the
+   waiter thread's own kernel stack (the "ghost").
+2. **Plant** — `rt_sigreturn` → `restore_fpsimd_context` copies 512 bytes of
+   fpsimd state from the user sigframe onto the deepest part of that stack,
+   overwriting the ghost's fields with a fake `tree_entry` / `lock` / `prio`.
+3. **Fire** — `sched_setattr(waiter_tid)` → `__sched_setscheduler` →
+   `rt_mutex_adjust_pi` → `rt_mutex_adjust_prio_chain` walks the planted tree;
+   the `pi_tree` erase is the actual arbitrary write (`*pi_left = pi_pc`).
+4. **Sysctl walk** — five stages reuse the primitive: hijack
+   `nf_loggers` → read back the KASLR slide → write `init_cred` into the anchor
+   task → flip SELinux to permissive → skip the anti-root (rscan) flag.
+5. **KernelSU** — a KernelSU LKM is loaded through the temporary root and
+   exposes `su`.
+
+Everything runs as `shell` (uid 2000) via Shizuku; no PC is required.
+
+---
+
+## 2. What we did (the experiments)
+
+### 2.1 Porting to REP-AN00
+
+The official firmware and the `boot.img`/kernel image extracted from it are
+**not** redistributed here. We recovered the symbol table from the device's own
+kernel with `vmlinux-to-elf` (≈140k symbols, base `0xffffffc008000000`) and
+confirmed every structure offset by disassembly:
+
+- `task_struct`: `real_cred 0x7b0`, `cred 0x7b8` (stock-GKI is `0x780` — this
+  vendor build is `0x38` larger), `pi_lock 0x8b4`, `pi_waiters 0x8b8`,
+  `pi_top_task 0x8c8`, `prio 0x84`, `normal_prio 0x8c`, `sched_class 0x98`;
+- `mm_struct` slab stride is `0x400` (not the inherited `0x3c0`); with the
+  wrong stride KernelSnitch failed 3/3, with `0x400` the anchor was found on
+  the first try;
+- `rt_sched_class` at `0x23449e0`;
+- the sigret carrier's landing byte was swept on the device
+  (`SLIDE_SIGRET_BUF_BYTE=0x10`).
+
+See [`docs/REP-AN00_PORT.md`](docs/REP-AN00_PORT.md) for the full provenance.
+
+### 2.2 Baseline and the `C1 fire` crash
+
+Six clean boots of the short chain (root → permissive → log collection):
+**4 succeeded, 2 hard-reset**. Both failures stopped at the *first* fire
+(`W3p planted` printed, no `C2 fired-ok`), i.e. the crash was in the fire, not
+in the later KernelSU stages.
+
+### 2.3 Instrumentation
+
+To see what the kernel actually saw we armed kprobes over `tracefs`:
+
+| probe | function | what it gave us |
 |---|---|---|
-| 8.0.0.128 | 5.10.168 | ✅ verified |
-| 8.0.0.160 | 5.10.209 | ✅ verified |
-| 9.0.0.157 | 5.10.209 | ✅ verified |
-| 9.0.0.200SP1 | 5.10.236 | ✅ verified |
-| 9.0.0.220SP2 / SP4 | 5.10.236 | ✅ verified (SP4 ships the same boot image as SP2) |
-| 9.0.0.230 | 5.10.236 | ✅ verified |
-| 8.0.0.131 | 5.10.198 | ⚠️ not verified on a real device |
-| 8.0.0.135 / 143 / 150 | 5.10.198 | ⚠️ not verified on a real device |
-| 8.0.0.161 | 5.10.209 | ⚠️ not verified on a real device |
-| 9.0.0.102 / 103 / 120 / 130 / 165 | 5.10.209 | ⚠️ not verified on a real device (103 ships the same boot image as 102) |
-| 9.0.0.175SP1 / 187 | 5.10.226 | ⚠️ not verified on a real device |
-| 9.0.0.210 | 5.10.236 | ⚠️ not verified on a real device |
+| `pi` | `rt_mutex_adjust_pi` | `task->pi_blocked_on` (the ghost pointer) + its first words |
+| `rfps` | `restore_fpsimd_context` | the waiter's stack reference point at plant time |
+| `sch` | `__schedule` | deepest stack depth of the IRQ/schedule path on that stack |
+| `tick` | `scheduler_tick` | tick-path depth |
+| `kmsg` | `/dev/kmsg` dumper | kernel messages that survive a reset |
 
-**Other devices (this fork):**
+Together with a cycle-counter trace (`D1`) and durable `O_SYNC` log files, this
+produced the geometry used below.
 
-| Device | MagicOS | Kernel | Status |
-|---|---|---|---|
-| Honor 90 (REA-NX9) | 9.0.0.211(C431E9R2P1) | 5.10.236 GKI | ✅ verified — UAF → permissive → KernelSU LKM chain works end to end |
+### 2.4 Root cause of the `C1 fire` crash
 
-> ⚠️ **Warning**
->
-> - For security research on **your own device** only.
-> - **USE AT YOUR OWN RISK.** This software comes with NO warranty of any
-> kind (see [LICENSE](LICENSE)). Simply running it should not brick your
-> device or lose data in theory, but back up first anyway; whatever
-> happens — from running this code or from anything you do with the root
-> access it grants — is your responsibility, not the authors'.
-> - The exploit modifies kernel memory through a UAF. A failed attempt
-> reboots the device; a reboot restores everything. Success is not 100%
-> per run — run it again.
-> - **Root is full control of the device — use it carefully.** This project
-> only gets you root; flashing images, writing partitions, disabling
-> protections, or installing untested modules afterwards can permanently
-> brick the device, and that is your responsibility.
+The fire must happen while the ghost is **resident and untouched** after the
+plant. The waiter keeps the plant alive by spinning in userspace for a bounded
+"hold". Everything that runs on the waiter's kernel stack inside that window
+can destroy the ghost — and the restore path itself is the worst offender: it
+`memset`s 0x210 bytes and then copies 0x200 bytes over the ghost region
+(`[0x250,0x460)` by depth), so a second `tgkill`/`rt_sigreturn` round rewrites
+what the first round planted.
 
-## Repository layout
+Measured values on this device:
+
+| quantity | value |
+|---|---|
+| plant copy base depth | `0x460` |
+| ghost word 0 depth (plant byte `0x10`) | `0x450` |
+| ghost range | `[0x408, 0x458)` |
+| fire-path frame bottom | `0x360` |
+| IRQ/`__schedule` deepest frame bottom on the waiter stack | `0x390` (58 samples; **0** events inside the ghost window `(0x338,0x458)`) |
+| in-process `O_SYNC` write | **> 50 µs and < 1 ms** |
+| old userspace hold | **50 µs** |
+
+The original code wrote two `O_SYNC` diagnostics **between** seeing the
+"plant is fresh" flag and calling `sched_setattr`:
+
+- the `D1` timing line (unconditional), and
+- the `C1 fire` marker (gated on `WALK_TRACE`, which `env_defaults.h` bakes
+  on by default).
+
+Either write blocks for longer than the 50 µs hold, so the waiter gives up,
+clears the flag and starts another round; the fire then lands in the middle of
+the restore and reads a torn ghost. The crashing log signature is exactly:
 
 ```
-exploit/     GhostLock PoC source (Android arm64) + build system
-  src/         exploit core: futex UAF, KASLR slide, sysctl boot_id hijack,
-               arbitrary R/W, cred/SELinux/sig_enforce writes, KSU load
-  src/targets/ per-firmware offset tables (target.h)
-ksu/         custom kernelsu.ko build (MagicOS kernel + device config) and the
-             PC-side adb load driver
-  tools/       on-device load helpers: load_ko.c / kmsg_dumper.c (built from
-               source), policy rules, loader template (+ where to get the
-               binaries)
+W3p planted
+D1 ... dt=95 cyc            ← the handshake itself was fine
+W3p planted                 ← the waiter re-stamped: the ghost was rewritten
+(no C2 fired-ok)            ← the fire crashed
 ```
 
-## Usage
+### 2.5 Causal A/B (same binary, only an env var changed)
 
-Requirements: Docker, Android Platform Tools.
+| configuration | result |
+|---|---|
+| `SLIDE_D1_TRACE=1` (restore the pre-fire `O_SYNC` write) | **2/2 crashes**, identical signature |
+| no pre-fire `O_SYNC` write | **5/5 successes**, 25/25 fires `C2 fired-ok`, **0** re-stamps |
+| 1 ms hold + `SLIDE_D1_TRACE=1` | **success**, 5/5 fires, **0** re-stamps — 1 ms fully absorbs the write |
+| 1 ms hold, no trace (default) | consecutive clean boots all succeed |
 
-One prebuilt bundle covers every supported firmware: download it from
-[Releases](../../releases), unpack it on the host, and run
+### 2.6 Why self-fire does not work
+
+Letting the waiter call `sched_setattr` on itself removes the cross-thread
+window, but the fire syscall then reuses the *same* kernel stack and its own
+path is too deep:
+
+- fire frames end at `0x360`, but the SELinux hook runs **before**
+  `rt_mutex_adjust_pi`: `security_task_setscheduler 0x30` →
+  `selinux_task_setscheduler 0x20` → `avc_has_perm 0xB0` (a cache hit adds
+  `avc_lookup 0x40`; a miss adds `avc_compute_av 0x50` and more), reaching
+  `0x3A0 … 0x400+` — inside the ghost range;
+- empirically the self-fire build crashed at the fire as well, so the knob was
+  left as an experiment (`SLIDE_SG_SELF`, default off).
+
+### 2.7 Fix and validation
+
+- no `O_SYNC` write between the plant handshake and the fire (the `C1` marker
+  moved after the fire, `D1` is behind `SLIDE_D1_TRACE`);
+- `SLIDE_SIGRET_GAP_US` default **50 → 1000** (1 ms hold);
+- everything else (KernelSU load, app flow) unchanged.
+
+Validation: short chain **10/10** clean boots (was 4/6); full chain
+(exploit + KernelSU LKM) **5/5**; the one-tap app completed the whole flow
+end-to-end as well. See [`docs/C1_FIRE_ROOTCAUSE.md`](docs/C1_FIRE_ROOTCAUSE.md)
+for the full data and the residual risks (consumer preemption beyond 1 ms, the
+softirq tail, and app-runtime load).
+
+### 2.8 One-tap app
+
+`onestep-app/` wraps the chain into a normal Android app:
+
+- **two buttons**: *Start Shizuku* (uses an accessibility service to tap
+  "start" and the permission dialog) and *One-tap root* (runs the kit through
+  Shizuku's shell);
+- **8-step task list** with an animated two-line scroller, a millisecond
+  timer, and a `k/5` progress label while the five sysctl stages run;
+- **device gate**: uptime ≥ 60 s and ≥ 4 GB free memory (no temperature or
+  CPU-frequency gating);
+- **tamper-resistant kit**: assets are mirrored into the app's private
+  directory with a per-file md5 manifest; `stage_kit.sh` copies only from
+  there and refuses anything that does not match;
+- **teardown** after success: disable wireless debugging and stop Shizuku;
+- real-time device status (accessibility / Shizuku / KernelSU / memory /
+  uptime) and a bottom snackbar explaining why a greyed-out button is
+  disabled.
+
+---
+
+## 3. Changes relative to the upstream Honor 90 port
+
+| Path | Change |
+|---|---|
+| `exploit/src/targets/honor-REP-AN00_9.0.0.230/` | **new target** (offsets reverse-engineered from the device kernel; provenance in the file header) |
+| `exploit/src/targets/honor-REP-AN00_9.0.0.230-mcast/` | experimental mcast carrier variant (not enabled by default) |
+| `exploit/src/slide.c` | fire timing: 1 ms hold (`SLIDE_SIGRET_GAP_US` 50→1000), no pre-fire `O_SYNC`, `D1` behind `SLIDE_D1_TRACE`, `C1` marker after the fire, `SLIDE_SG_SELF` self-fire experiment |
+| `exploit/src/common.h` | `MM_STRUCT_SZ` `0x3c0` → `0x400` (REP-AN00 slab stride), self-contained/walk-target knobs |
+| `exploit/src/sysctl.c` | diagnostic walk-target override and self-contained chain mode |
+| `exploit/docker-build.sh` | proxy environment for the persistent builder |
+| `ksu/ksu_ko_build.sh` | KernelSU LKM build adjustments |
+| `onestep-app/` | **new**: the one-tap Android app (Java, no AndroidX), build scripts, binary deps |
+| `research/` | **new**: offline rtmutex/chain models, device probe scripts, reports |
+| `docs/C1_FIRE_ROOTCAUSE.md`, `docs/REP-AN00_PORT.md`, `docs/DEPENDENCIES.md` | **new** |
+| `perf_test.c`, `trace_reader.c`, `exploit/enforcing_test.sh` | **new** diagnostic tools |
+| `exploit/*.log` | device test logs (git-ignored) |
+
+---
+
+## 4. Repository layout
+
+```
+exploit/            GhostLock source (C), target definitions, docker build
+  src/targets/honor-REP-AN00_9.0.0.230/    ← our device
+ksu/                KernelSU LKM build scripts, patches, userspace tools
+onestep-app/        Android app (one-tap): app/src, deps/, build.sh
+research/           C1-fire investigation: reports/, harness/, scripts/
+docs/               port notes, C1-fire analysis, dependencies
+```
+
+## 5. Build
+
+Dependencies (Docker/NDK, Android SDK, KernelSU, runtime) are listed in
+[`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
 
 ```sh
-./setup.sh            # PC, with adb: identifies the kernel, picks the
-                      # matching exploit, runs the chain, retries when an
-                      # attempt fails
+# 1) exploit -> exploit/build/honor-REP-AN00_9.0.0.230/bin/exploit_static
+PROJECT=honor-REP-AN00_9.0.0.230 ./exploit/docker-build.sh
+
+# 2) app (generates assets from deps/ + the exploit build)
+cd onestep-app
+./prepare-assets.sh
+ANDROID_SDK=$HOME/projects/android-sdk ./build.sh     # -> build/app-signed.apk
 ```
 
-Without a PC, unpack the bundle on the phone and run the same script
-from a Shizuku shell (rish) — it detects where it is and does the rest
-locally:
+Prebuilt APKs are attached to Releases.
 
-```sh
-sh /sdcard/ghostlock/setup.sh
-```
+## 6. Usage
 
-The script matches the running kernel against the bundled manifest:
-verified firmwares run directly, known-but-untested ones ask for
-confirmation, anything else is refused.
+1. Install the APK (or push the scripts in `research/scripts/` to
+   `/data/local/tmp` and run them from `adb shell` / Shizuku).
+2. Enable the accessibility service once
+   (`Settings → Accessibility → 一键GLKS`).
+3. Tap **Start Shizuku**, wait for *完成*.
+4. Tap **One-tap root**, wait for *完成*; `su -c id` should print
+   `uid=0 … u:r:ksu:s0`.
 
-Build from source instead:
+## 7. Known limitations
 
-```sh
-# 1. Build the exploit binary
-cd exploit && ./docker-build.sh bin             # exploit_static (8.0.0.128)
-#    8.0.0.160: ./docker-build.sh PROJECT=annap-AGT-AN00_8.0.0.160 bin
-#    (the static binary bakes in the default env config; any knob can still
-#     be overridden by environment variables at launch; first run pulls the NDK, ~1.2GB)
+- a small residual fire crash probability remains (see the C1-fire document,
+  §7); the app lowers runtime UI load during the run to reduce interference;
+- the app process may be reclaimed by the system; reopening shows *idle*;
+- Shizuku occasionally needs an app restart to re-deliver the binder;
+- the port targets REP-AN00 9.0.0.230 only — do not run it on other builds.
 
-# 2. The KSU-side binaries live in ksu/tools/ (see ksu/tools/README.md):
-#    kernelsu.ko — build per ksu/README.md;
-#    ksud, magiskpolicy, ksu_rules — shipped in the repo;
-#    load_ko, kmsg_dumper — ./docker-build.sh tools
+## 8. Credits & license
 
-# 3. Enable ADB debugging on the phone, then
-bash ../ksu/ksu_load_ko.sh
-#    8.0.0.160: PROJECT=annap-AGT-AN00_8.0.0.160 bash ../ksu/ksu_load_ko.sh
-```
+- Original PoC: [yakidango-official/GhostLock-H80GT](https://github.com/yakidango-official/GhostLock-H80GT);
+- Honor 90 port: [cyrrp/honor90-ghostlock](https://github.com/cyrrp/honor90-ghostlock);
+- KernelSU, Magisk (`magiskpolicy`), Shizuku: their respective authors;
+- License: see [`LICENSE`](LICENSE).
 
-The script drives the whole chain over adb: GhostLock (root access, SELinux
-permissive, `sig_enforce` disabled), SELinux policy injection via magiskpolicy, fake kallsyms
-bind-mount, `load_ko` (`init_module`), then the ksud bring-up stages,
-restoring SELinux enforcing as the absolute last step. When the jailbreak
-completes, the script opens the KernelSU manager for you (shows
-"Working &lt;LKM&gt; [Jailbreak mode]").
-
-## Port: Honor 90 (REA-NX9)
-
-Verified on MagicOS **9.0.0.211(C431E9R2P1)**, Android 15, kernel
-`5.10.236-android12-9-00006-g71f3aedc8b92` — a **pure AOSP GKI** build
-(tag `android12-5.10-2025-05_r7`), unlike the Honor-patched H80GT kernels.
-
-```sh
-cd ksu
-PROJECT=honor-REA-NX9_9.0.0.211 bash ksu_load_ko.sh
-```
-
-Port specifics:
-
-- New target table `exploit/src/targets/honor-REA-NX9_9.0.0.211/`
-  (kallsyms offsets from the Google System.map of the exact build; disasm
-  offsets carried from annap 9.0.0.230 — same GKI family).
-- `CONFIG_MODULE_SIG` is unset on this kernel (stock GKI) — there is no
-  sig_enforce gate, so `FLIP_SIG` is no longer baked into env defaults;
-  the launcher sets it only for targets that actually have the gate
-  (`exploit/src/env_defaults.h`, `target.h` `SIG_ENFORCE_OFF` unused).
-- `ksu/tools/load_ko.c`: `kasan_flag_enabled` is now resolved **dynamically
-  from kallsyms** (with `empty_zero_page` as fallback). The old static
-  alias pointed into `__jump_table` on this kernel and wrote to
-  ZERO_PAGE — a dangerous bug kept out of the port.
-- `ksu/tools/ksu_loader.tmpl`: invokes `user_batch.sh` (if present) while
-  uid0/permissive, before the `.ko` load — hook for post-root ops that
-  the shell normally can't do (protected-package disables, settings
-  hygiene). An REA-NX9 example bundle ships as `ksu/tools/user_batch.sh`.
-- `ksu_load_ko.sh`: MSYS/Git-Bash fixes (leading `//` device paths so MSYS
-  doesn't rewrite them into Windows paths), fresh RUNDIR per attempt.
-- `kernelsu.ko` for this device was built against AOSP `android12-5.10`
-  with the device `.config` — full recipe and verification notes in
-  [docs/KERNEL_BUILD.md](docs/KERNEL_BUILD.md)
-  (`ksu/wsl_build_inner.sh`, `ksu/tools/cmp_offsets.py`).
-- `probes/` — small arm64 syscall/IOCTL surface probes used during
-  bring-up (build inside Termux/adb shell, not on the PC).
-- Root is **ephemeral**: nothing is written to boot partitions; a reboot
-  returns the device to stock. Re-run `ksu_load_ko.sh` after each boot.
-
-## Why a custom .ko and loader
-
-- `CONFIG_MODULE_SIG_FORCE=y` — the runtime `sig_enforce` flag blocks
-unsigned module loads; the exploit temporarily flips it to 0 (the loader
-script restores it to 1 once the module is in).
-- kallsyms name-stripping: Honor removes `commit_creds` and friends from
-`/proc/kallsyms`, so the kernel loader can't resolve the .ko's undefined
-symbols. The flow bind-mounts a fake kallsyms with the stripped symbols
-prepended at their true runtime addresses (link addr + KASLR slide).
-- GKI struct layouts also differ from Honor's, so the stock GKI
-`android12-5.10_kernelsu.ko` cannot be used directly. `ksu/` rebuilds
-KernelSU against the MagicOS kernel source matching the firmware's
-sublevel and the device's own kernel config. See `ksu/README.md`.
-
-## Verification status
-
-Full chain (UAF → KASLR → arbitrary R/W → cred → SELinux permissive →
-sig_enforce → KernelSU live, enforcing restored, boot_id restored)
-verified on a real device for the versions marked ✅ above; versions
-marked ⚠️ are adapted but not verified on a real device. A run
-can fail and reboot the phone; the setup script retries automatically,
-or run it again.
-
-## Credits
-
-- [CyberMeowfia / IonStack](https://github.com/NebuSec/CyberMeowfia)
-- [KernelSU](https://github.com/tiann/KernelSU) 
-- [Magisk](https://github.com/topjohnwu/Magisk)
-
-## License
-
-- The exploit and tooling in this repository (`exploit/`, top-level docs) are
-under the **Apache License 2.0** (see [LICENSE](LICENSE)), same as the
-upstream IonStack PoC this port derives from.
-- The files under [`ksu/`](ksu/) are **GPL-2.0** (see
-[ksu/LICENSE](ksu/LICENSE)): `init-bootid.patch` and the `ksu_rules.annotated` policy
-set derive from KernelSU's `kernel/` directory, which is GPL-2.0.
-
-
-## HONOR 90 Pro (REP-AN00) port, one-click app, and C1-fire analysis
-
-This fork adds a verified port for the **HONOR 90 Pro `REP-AN00`**
-(MagicOS 9.0.0.230, kernel `5.10.236-android12-9-g3c84ac3cc469`):
-
-- `exploit/src/targets/honor-REP-AN00_9.0.0.230/` — target offsets recovered
-  from the device kernel's kallsyms and confirmed by disassembly
-  (see [`docs/REP-AN00_PORT.md`](docs/REP-AN00_PORT.md));
-- `exploit/src/slide.c` — fire timing fixes: no O_SYNC writes between the
-  plant handshake and `sched_setattr`, and a 1 ms userspace hold
-  (root cause + A/B evidence in [`docs/C1_FIRE_ROOTCAUSE.md`](docs/C1_FIRE_ROOTCAUSE.md));
-- `onestep-app/` — a one-tap Android app that chains Shizuku + GhostLock +
-  KernelSU LKM (8-step progress UI, private kit mirror with md5 manifest);
-- `research/` — the offline models and device scripts used to localize the
-  C1-fire crash (harness, reports, probe scripts);
-- `docs/DEPENDENCIES.md` — build and runtime dependencies.
-
-> The official firmware packages and the kernel/boot images extracted from them
-> are **not** redistributed here; only the analysis results and reproducible
-> tooling are.
+> **Disclaimer**: this code is published for security research and for
+> repairing devices you own. It deliberately manipulates kernel memory,
+> disables SELinux and loads an unsigned kernel module. Use it at your own
+> risk; do not use it on devices you do not own or where doing so is illegal.
+> Official firmware packages and kernel/boot images are **not** redistributed
+> here.
