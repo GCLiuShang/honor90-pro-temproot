@@ -85,6 +85,9 @@ docker run --rm \
     --hostname "$container_name" \
     --label "com.cybermeowfia.purpose=ksu-ko-build" \
     --stop-timeout 10 \
+    -e http_proxy="${http_proxy:-}" -e https_proxy="${https_proxy:-}" \
+    -e HTTP_PROXY="${HTTP_PROXY:-}" -e HTTPS_PROXY="${HTTPS_PROXY:-}" \
+    -e no_proxy="localhost,127.0.0.1,::1" \
     --mount "type=bind,src=$kernel_src,dst=/kernel-src,readonly" \
     --mount "type=bind,src=$stage_dir,dst=/build" \
     debian:bookworm \

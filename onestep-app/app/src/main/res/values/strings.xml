@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">一键GLKS</string>
+    <string name="acc_desc">在 Shizuku 界面自动点击“启动”，让一键临时 root 无需手动操作。</string>
+    <string name="log_path_hint">日志文件：Android/data/com.ghostlock.ksuapp/files/app.log</string>
+</resources>

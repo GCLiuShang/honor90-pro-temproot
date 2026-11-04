@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.ghostlock.ksuapp">
+
+    <!-- Shizuku's own runtime permission. Without it the server cannot hand us
+         shell access, and the app never appears in Shizuku's authorised list. -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+    <!-- Not grantable by the user, but shell (uid 2000) can grant it: the app
+         grants it to itself through Shizuku once, then it can re-enable its own
+         accessibility service after MagicOS clears it on every power cycle. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+        android:allowBackup="false">
+
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Accessibility: taps the "start" button inside Shizuku -->
+        <service
+            android:name=".ShizukuStartService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- Shizuku provider (lets us call its API) -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="com.ghostlock.ksuapp.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+</manifest>

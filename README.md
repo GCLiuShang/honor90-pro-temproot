@@ -193,3 +193,24 @@ upstream IonStack PoC this port derives from.
 [ksu/LICENSE](ksu/LICENSE)): `init-bootid.patch` and the `ksu_rules.annotated` policy
 set derive from KernelSU's `kernel/` directory, which is GPL-2.0.
 
+
+## HONOR 90 Pro (REP-AN00) port, one-click app, and C1-fire analysis
+
+This fork adds a verified port for the **HONOR 90 Pro `REP-AN00`**
+(MagicOS 9.0.0.230, kernel `5.10.236-android12-9-g3c84ac3cc469`):
+
+- `exploit/src/targets/honor-REP-AN00_9.0.0.230/` — target offsets recovered
+  from the device kernel's kallsyms and confirmed by disassembly
+  (see [`docs/REP-AN00_PORT.md`](docs/REP-AN00_PORT.md));
+- `exploit/src/slide.c` — fire timing fixes: no O_SYNC writes between the
+  plant handshake and `sched_setattr`, and a 1 ms userspace hold
+  (root cause + A/B evidence in [`docs/C1_FIRE_ROOTCAUSE.md`](docs/C1_FIRE_ROOTCAUSE.md));
+- `onestep-app/` — a one-tap Android app that chains Shizuku + GhostLock +
+  KernelSU LKM (8-step progress UI, private kit mirror with md5 manifest);
+- `research/` — the offline models and device scripts used to localize the
+  C1-fire crash (harness, reports, probe scripts);
+- `docs/DEPENDENCIES.md` — build and runtime dependencies.
+
+> The official firmware packages and the kernel/boot images extracted from them
+> are **not** redistributed here; only the analysis results and reproducible
+> tooling are.

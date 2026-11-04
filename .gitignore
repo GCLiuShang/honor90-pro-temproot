@@ -9,3 +9,21 @@ ksu/tools/kmsg_dumper
 ksu/.build*/
 build/
 ksu/tools/kernelsu.ko
+
+# ---- device test logs (not part of the deliverable) ----
+exploit/*.log
+*.log
+
+# ---- one-step app: generated assets (see onestep-app/prepare-assets.sh) ----
+onestep-app/build/
+onestep-app/app/src/main/assets/exploit_static
+onestep-app/app/src/main/assets/kernelsu.ko
+onestep-app/app/src/main/assets/kernelsu.new.ko
+onestep-app/app/src/main/assets/ksudbin
+onestep-app/app/src/main/assets/magiskpolicy
+onestep-app/app/src/main/assets/kmsg_dumper
+
+# ---- misc binaries ----
+perf_test
+trace_reader_bin
+ksu/tools/kernelsu.nohook.ko
