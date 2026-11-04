@@ -104,3 +104,19 @@ bash ../ksu/ksu_load_ko.sh
 - `exploit/`与文档：**Apache License 2.0**（见[LICENSE](LICENSE)），与上游PoC一致。
 - `ksu/`：**GPL-2.0**（见[ksu/LICENSE](ksu/LICENSE)），`init-bootid.patch`与`ksu_rules.annotated`衍生自KernelSU的`kernel/`目录。
 
+
+## HONOR 90 Pro（REP-AN00）移植、一键 App 与 C1 fire 分析
+
+本 fork 新增：
+
+- `exploit/src/targets/honor-REP-AN00_9.0.0.230/`：真机内核 kallsyms + 反汇编
+  确认的偏移（见 [`docs/REP-AN00_PORT.md`](docs/REP-AN00_PORT.md)）；
+- `exploit/src/slide.c`：fire 时序修复——plant 握手到 `sched_setattr` 之间不再
+  有 O_SYNC 写，waiter 用户态 hold 提到 1ms（根因与 A/B 证据见
+  [`docs/C1_FIRE_ROOTCAUSE.md`](docs/C1_FIRE_ROOTCAUSE.md)）；
+- `onestep-app/`：一键 App（Shizuku + GhostLock + KernelSU LKM，8 步任务单、
+  私有套件镜像 + md5 清单）；
+- `research/`：定位 C1 fire 用的离线模型与真机脚本；
+- `docs/DEPENDENCIES.md`：编译/运行依赖。
+
+> 官方固件包及其中的内核/系统镜像不随本仓库分发，只保留分析结论与可复现工具。
