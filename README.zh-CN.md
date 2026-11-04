@@ -12,6 +12,10 @@
 > （荣耀 90 REA-NX9 移植）→ **本 fork**（荣耀 90 Pro REP-AN00 移植、fire 时序修复、
 > 一键 App、C1 fire 分析）。
 
+> **上游支持范围**（本 fork 未改动）：基座仓库还包含荣耀 80 GT（AGT-AN00，
+> MagicOS 8.0.0.128 … 9.0.0.230）与荣耀 90（REA-NX9，9.0.0.211）目标，见
+> [cyrrp/honor90-ghostlock](https://github.com/cyrrp/honor90-ghostlock)。
+
 ---
 
 ## 1. 利用原理（一页说明）

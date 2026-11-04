@@ -14,6 +14,11 @@ roughly one attempt in three.
 > (Honor 90 REA-NX9 port) → **this fork** (Honor 90 Pro REP-AN00 port, fire
 > timing fixes, one-tap app, C1-fire analysis).
 
+> **Upstream support** (unchanged by this fork): the parent repository also
+> carries the Honor 80 GT (AGT-AN00, MagicOS 8.0.0.128 … 9.0.0.230) and the
+> Honor 90 (REA-NX9, 9.0.0.211) targets — see
+> [cyrrp/honor90-ghostlock](https://github.com/cyrrp/honor90-ghostlock).
+
 ---
 
 ## 1. How the exploit works (one page)
