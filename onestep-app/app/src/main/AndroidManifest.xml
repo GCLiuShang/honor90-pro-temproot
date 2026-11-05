@@ -18,6 +18,8 @@
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
         android:allowBackup="false">
 
+        <activity android:name=".PatchSettingsActivity" android:exported="false"/>
+
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -39,6 +41,13 @@
         </service>
 
         <!-- Shizuku provider (lets us call its API) -->
+        <!-- LSPosed module metadata: loaded by zygisk_lsposed into scoped processes. -->
+        <meta-data android:name="xposedmodule" android:value="true"/>
+        <meta-data android:name="xposeddescription"
+            android:value="GhostLock 安全补丁：支付保护中心/平行空间的 root 检测绕过"/>
+        <meta-data android:name="xposedminversion" android:value="93"/>
+        <meta-data android:name="xposedscope" android:resource="@array/xposed_scope"/>
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="com.ghostlock.ksuapp.shizuku"

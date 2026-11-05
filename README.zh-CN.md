@@ -161,6 +161,31 @@ LKM）**5/5**；一键 App 也端到端跑通。完整数据与残余风险（co
 - 实时设备状态（无障碍 / Shizuku / KernelSU / 内存 / 开机时长），灰色按钮
   点击时底部白底黑字提示原因。
 
+### 2.9 平行空间 / 支付保护中心 / 查找设备：LSPosed 安全补丁模块
+
+移植临时 root 的过程中，我们还梳理了三个 MagicOS 安全功能的 root 门槛，
+并把绕过做成了随同一键包 APK 分发的 LSPosed 模块。
+
+| 组件 | root 门槛 | 绕过 |
+|---|---|---|
+| 平行空间（`com.hihonor.parallelspace`） | `ApplicationUtil.isRoot()`（读 `msc.parallelspace.debug_mode`）；设置空间密码时的 AssetManager **写**被 `com.hihonor.securityserver` 的 `HwKeystoreServiceImpl.isRoot()` 拒绝（`-319`） | hook `ApplicationUtil.isRoot()` → false，**并**在 root 后 `setprop msc.parallelspace.debug_mode 1`（双保险） |
+| 支付保护中心（`com.hihonor.trustspace`） | 风险扫描 `getRootStatusSync() > 0 ? 0 : 6`（0 = 风险） | hook `HwSecurityDiagnoseManager.getRootStatusSync()` → 0 |
+| 空间密码写入（`com.hihonor.securityserver`） | `HwKeystoreServiceImpl.isRoot()` | hook → false（仅创建/重设空间密码时需要） |
+
+查找设备（`com.hihonor.findmydevice`）**不用** root 做 UI 闸门（`SystemUtil.isRoot()`
+只用于 BI/云端上报）；之前杀 `hwsecurity` HAL 的做法会破坏查找设备，模块**不碰 HAL**。
+
+APK 同时是一键 App 和 LSPosed 模块（legacy Xposed API，`assets/xposed_init` →
+`com.ghostlock.ksuapp.PatchEntry`，作用域在 `res/values/arrays.xml`）。
+安装后在 LSPosed 管理器中启用 **一键GLKS** 并勾选 `trustspace`、`securityserver`、
+`parallelspace`（`findmydevice` 可选）；App 内新增的 **安全补丁模块** 页面会显示
+模块是否启用、作用域是否齐全（读取 LSPosed 的 `modules_config.db`），并提供
+每个 hook 的开关（默认开）与“重启服务”按钮（force-stop 目标进程让 LSPosed 重新注入）。
+
+细节与证据：[`docs/PARALLEL_SPACE.md`](docs/PARALLEL_SPACE.md)、
+[`docs/SECURITY_PATCH.md`](docs/SECURITY_PATCH.md)、
+[`docs/SECURITY_PATCH_MODULE_DESIGN.md`](docs/SECURITY_PATCH_MODULE_DESIGN.md)。
+
 ---
 
 ## 3. 相对上游荣耀 90 移植的改动
@@ -177,6 +202,8 @@ LKM）**5/5**；一键 App 也端到端跑通。完整数据与残余风险（co
 | `onestep-app/` | **新增**：一键 Android App（Java，无 AndroidX）、构建脚本、二进制依赖 |
 | `research/` | **新增**：离线 rtmutex/PI 链模型、真机探针脚本、报告 |
 | `docs/C1_FIRE_ROOTCAUSE.md`、`docs/REP-AN00_PORT.md`、`docs/DEPENDENCIES.md` | **新增** |
+| `onestep-app/.../PatchEntry.java`、`PatchSettingsActivity.java`、`res/values/arrays.xml`、`assets/xposed_init`、`libs/xposed-api-stub.jar`、`xposed-stub/` | **新增**：LSPosed 安全补丁模块（平行空间/支付保护/空间密码的 root 门槛）及其设置页 |
+| `docs/PARALLEL_SPACE.md`、`docs/SECURITY_PATCH.md`、`docs/SECURITY_PATCH_MODULE_DESIGN.md` | **新增** |
 | `perf_test.c`、`trace_reader.c`、`exploit/enforcing_test.sh` | **新增**诊断工具 |
 | `exploit/*.log` | 真机测试日志（已 gitignore）|
 
@@ -190,7 +217,7 @@ exploit/            GhostLock 源码（C）、目标定义、docker 构建
 ksu/                KernelSU LKM 构建脚本、补丁、用户态工具
 onestep-app/        一键 App：app/src、deps/、build.sh
 research/           C1 fire 定位材料：reports/、harness/、scripts/
-docs/               移植说明、C1 fire 分析、依赖
+docs/               移植说明、C1 fire 分析、平行空间/安全补丁、依赖
 ```
 
 ## 5. 构建
@@ -217,6 +244,11 @@ ANDROID_SDK=$HOME/projects/android-sdk ./build.sh     # -> build/app-signed.apk
 2. 首次开启无障碍：`设置 → 无障碍 → 一键GLKS`；
 3. 点 **启动 Shizuku**，等状态变为 *完成*；
 4. 点 **一键越狱**，等 *完成*；`su -c id` 应输出 `uid=0 … u:r:ksu:s0`。
+5. （可选，安全功能相关）启用内置 LSPosed 模块：打开 LSPosed 管理器
+   （KernelSU 模块 `zygisk_lsposed`），启用 **一键GLKS** 并勾选
+   `com.hihonor.trustspace`、`com.hihonor.securityserver`、
+   `com.hihonor.parallelspace`（`com.hihonor.findmydevice` 可选）。
+   App 内 **安全补丁模块** 页面会显示作用域是否齐全，并可重启对应服务。
 
 ## 7. 已知限制
 
@@ -224,7 +256,13 @@ ANDROID_SDK=$HOME/projects/android-sdk ./build.sh     # -> build/app-signed.apk
   UI 负载以减少干扰；
 - App 进程可能被系统回收，重新打开显示 *待机*；
 - Shizuku 偶尔需要重启 App 才能重新收到 binder；
-- 仅针对 REP-AN00 9.0.0.230，不要在其他版本上运行。
+- 仅针对 REP-AN00 9.0.0.230，不要在其他版本上运行；
+- LSPosed 模块需要在管理器中手动勾选一次作用域；LSPosed 在进程启动时注入，
+  修改作用域后用 App 内“重启服务”按钮（或重启）让目标进程重新加载；
+- 重启会丢失临时 root 与 `msc.parallelspace.debug_mode`，重新跑一键越狱即可
+  （收尾会自动写入该属性）；
+- USB 调试开着时，支付保护中心仍会报“USB 调试未禁用”，这一项与 root 无关；
+- 不要用杀 `hwsecurity` HAL 的方式“修复”支付保护：会破坏查找设备，模块刻意不碰 HAL。
 
 ## 8. 致谢与许可
 

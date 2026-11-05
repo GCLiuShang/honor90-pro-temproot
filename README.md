@@ -184,6 +184,37 @@ softirq tail, and app-runtime load).
   uptime) and a bottom snackbar explaining why a greyed-out button is
   disabled.
 
+### 2.9 Parallel space, payment protection and Find Device: the LSPosed patch module
+
+While porting the temporary root we also mapped the root gates of three MagicOS
+security features and turned the bypasses into a small LSPosed module shipped
+inside the same APK.
+
+| Component | root gate | bypass |
+|---|---|---|
+| Parallel space (`com.hihonor.parallelspace`) | `ApplicationUtil.isRoot()` (reads `msc.parallelspace.debug_mode`); the AssetManager **write** when setting the space password is refused by `com.hihonor.securityserver` (`HwKeystoreServiceImpl.isRoot()`, error `-319`) | hook `ApplicationUtil.isRoot()` → false **and** `setprop msc.parallelspace.debug_mode 1` after root (belt and braces) |
+| Payment protection (`com.hihonor.trustspace`) | risk scanner `getRootStatusSync() > 0 ? 0 : 6` (0 = risk) | hook `HwSecurityDiagnoseManager.getRootStatusSync()` → 0 |
+| Space-password write (`com.hihonor.securityserver`) | `HwKeystoreServiceImpl.isRoot()` | hook → false (only needed when creating or resetting a space password) |
+
+Find Device (`com.hihonor.findmydevice`) does **not** gate its UI on root — its
+`SystemUtil.isRoot()` is only used for BI/cloud reporting — and killing the
+`hwsecurity` HAL to "pass" payment protection breaks Find Device, so the module
+never touches the HAL.
+
+The APK is both the one-tap app and an LSPosed module (legacy Xposed API,
+`assets/xposed_init` → `com.ghostlock.ksuapp.PatchEntry`, scopes in
+`res/values/arrays.xml`). After installing, enable **一键GLKS** in the LSPosed
+manager and tick `trustspace`, `securityserver`, `parallelspace`
+(`findmydevice` optional). The new **安全补丁模块** screen in the app reports
+whether the module is enabled and whether the required scopes are selected
+(read from LSPosed's `modules_config.db`), exposes per-hook switches (default
+on) and "restart service" buttons that force-stop a target so LSPosed
+reinjects it.
+
+Details and evidence: [`docs/PARALLEL_SPACE.md`](docs/PARALLEL_SPACE.md),
+[`docs/SECURITY_PATCH.md`](docs/SECURITY_PATCH.md),
+[`docs/SECURITY_PATCH_MODULE_DESIGN.md`](docs/SECURITY_PATCH_MODULE_DESIGN.md).
+
 ---
 
 ## 3. Changes relative to the upstream Honor 90 port
@@ -200,6 +231,8 @@ softirq tail, and app-runtime load).
 | `onestep-app/` | **new**: the one-tap Android app (Java, no AndroidX), build scripts, binary deps |
 | `research/` | **new**: offline rtmutex/chain models, device probe scripts, reports |
 | `docs/C1_FIRE_ROOTCAUSE.md`, `docs/REP-AN00_PORT.md`, `docs/DEPENDENCIES.md` | **new** |
+| `onestep-app/.../PatchEntry.java`, `PatchSettingsActivity.java`, `res/values/arrays.xml`, `assets/xposed_init`, `libs/xposed-api-stub.jar`, `xposed-stub/` | **new**: LSPosed security-patch module (parallel space / payment protection / space-password root gates) and its settings screen |
+| `docs/PARALLEL_SPACE.md`, `docs/SECURITY_PATCH.md`, `docs/SECURITY_PATCH_MODULE_DESIGN.md` | **new** |
 | `perf_test.c`, `trace_reader.c`, `exploit/enforcing_test.sh` | **new** diagnostic tools |
 | `exploit/*.log` | device test logs (git-ignored) |
 
@@ -213,7 +246,7 @@ exploit/            GhostLock source (C), target definitions, docker build
 ksu/                KernelSU LKM build scripts, patches, userspace tools
 onestep-app/        Android app (one-tap): app/src, deps/, build.sh
 research/           C1-fire investigation: reports/, harness/, scripts/
-docs/               port notes, C1-fire analysis, dependencies
+docs/               port notes, C1-fire analysis, parallel space / security patch, dependencies
 ```
 
 ## 5. Build
@@ -242,6 +275,12 @@ Prebuilt APKs are attached to Releases.
 3. Tap **Start Shizuku**, wait for *完成*.
 4. Tap **One-tap root**, wait for *完成*; `su -c id` should print
    `uid=0 … u:r:ksu:s0`.
+5. (Optional, for the security features) enable the built-in LSPosed module:
+   open the LSPosed manager (KernelSU module `zygisk_lsposed`), enable
+   **一键GLKS** and tick `com.hihonor.trustspace`, `com.hihonor.securityserver`,
+   `com.hihonor.parallelspace` (`com.hihonor.findmydevice` optional). The app's
+   **安全补丁模块** screen shows whether the scopes are complete and can
+   restart the affected services.
 
 ## 7. Known limitations
 
@@ -249,7 +288,16 @@ Prebuilt APKs are attached to Releases.
   §7); the app lowers runtime UI load during the run to reduce interference;
 - the app process may be reclaimed by the system; reopening shows *idle*;
 - Shizuku occasionally needs an app restart to re-deliver the binder;
-- the port targets REP-AN00 9.0.0.230 only — do not run it on other builds.
+- the port targets REP-AN00 9.0.0.230 only — do not run it on other builds;
+- the LSPosed module needs a one-time scope selection in the LSPosed manager;
+  LSPosed applies it at process start, so use the in-app "restart service"
+  buttons (or reboot) after changing scopes;
+- a reboot drops the temporary root and `msc.parallelspace.debug_mode`; re-run
+  the one-tap root (it writes the property again);
+- payment protection still reports "USB debugging not disabled" while adb is
+  on — that item is unrelated to root;
+- Find Device must not be "fixed" by killing the `hwsecurity` HAL: the module
+  deliberately leaves the HAL alone (killing it breaks Find Device).
 
 ## 8. Credits & license
 

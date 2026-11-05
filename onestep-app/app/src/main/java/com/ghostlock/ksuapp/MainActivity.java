@@ -423,6 +423,23 @@ public class MainActivity extends Activity {
         logBtn.setOnClickListener(v -> showPage(true));
         logRow.addView(logBtn, new LinearLayout.LayoutParams(-1, dp(48)));
 
+        LinearLayout patchRow = new LinearLayout(this);
+        patchRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams prlp = new LinearLayout.LayoutParams(-1, -2);
+        prlp.topMargin = dp(8);
+        col.addView(patchRow, prlp);
+
+        Button patchBtn = new Button(this);
+        patchBtn.setText("安全补丁模块");
+        patchBtn.setTextSize(14);
+        patchBtn.setTextColor(getColor(R.color.brand));
+        patchBtn.setAllCaps(false);
+        patchBtn.setBackground(round(0xFFFFFFFF, 16));
+        patchBtn.setStateListAnimator(null);
+        patchBtn.setOnClickListener(v ->
+                startActivity(new Intent(MainActivity.this, PatchSettingsActivity.class)));
+        patchRow.addView(patchBtn, new LinearLayout.LayoutParams(-1, dp(48)));
+
         // 底部浮出消息（白底黑字），用于“为什么不让我点”的即时提示。
         snackView = new TextView(this);
         snackView.setTextSize(13);
@@ -1287,6 +1304,7 @@ public class MainActivity extends Activity {
                     snack("越狱未完成：请查看日志");
                     return;
                 }
+                applyPatchDebugProp();
                 teardownAfterRootBlocking();
                 setStep(6, DONE);
                 setStep(7, DONE);
@@ -1303,6 +1321,17 @@ public class MainActivity extends Activity {
                 updateButtons();
             }
         }, "kit").start();
+    }
+
+    /** 安全补丁（C 保险）：临时 root 可用后写入平行空间属性，作为 LSPosed hook 的兜底。 */
+    private void applyPatchDebugProp() {
+        try {
+            String r = rikka.shizuku.ShizukuShellHelper.run(
+                    "su -c 'setprop msc.parallelspace.debug_mode 1; getprop msc.parallelspace.debug_mode' 2>&1").trim();
+            log("安全补丁 · 平行空间 debug_mode=" + r);
+        } catch (Throwable t) {
+            log("安全补丁 · 设置 debug_mode 失败: " + t);
+        }
     }
 
     /** 一键越狱成功后收尾：关闭无线调试、停掉 Shizuku 服务与 App。 */

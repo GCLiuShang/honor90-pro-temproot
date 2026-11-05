@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 SDK="${ANDROID_SDK:-$HOME/projects/android-sdk}"
 export PATH="$SDK/build-tools/android-15:$PATH"
 AJ="$SDK/platforms/android-35/android.jar"
-CP="$AJ:libs/shizuku-api.jar:libs/shizuku-provider.jar:libs/shizuku-aidl.jar"
+CP="$AJ:libs/shizuku-api.jar:libs/shizuku-provider.jar:libs/shizuku-aidl.jar:libs/xposed-api-stub.jar"
 rm -rf build && mkdir -p build/gen build/classes build/dex
 aapt2 compile --dir app/src/main/res -o build/res.zip
 # Plain aapt2 does NOT substitute ${applicationId}. A leftover placeholder
@@ -19,7 +19,7 @@ aapt2 link -o build/unsigned.apk -I $AJ --manifest app/src/main/AndroidManifest.
 javac -source 17 -target 17 -nowarn -cp "$CP" -d build/classes \
   build/gen/com/ghostlock/ksuapp/R.java app/src/main/java/com/ghostlock/ksuapp/*.java \
   app/src/main/java/rikka/shizuku/*.java
-d8 --lib $AJ --min-api 26 --output build/dex $(find build/classes -name '*.class') \
+d8 --lib $AJ --lib libs/xposed-api-stub.jar --min-api 26 --output build/dex $(find build/classes -name '*.class') \
   libs/shizuku-api.jar libs/shizuku-provider.jar libs/shizuku-aidl.jar
 cp build/unsigned.apk build/app.apk
 (cd build && zip -q -j app.apk dex/classes.dex)

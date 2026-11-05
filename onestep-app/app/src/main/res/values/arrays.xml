@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposed_scope">
+        <item>com.hihonor.trustspace</item>
+        <item>com.hihonor.securityserver</item>
+        <item>com.hihonor.parallelspace</item>
+        <item>com.hihonor.findmydevice</item>
+    </string-array>
+</resources>

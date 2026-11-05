@@ -35,8 +35,9 @@ PROJECT=honor-REP-AN00_9.0.0.230 ./exploit/docker-build.sh
 | JDK | 17+ |
 | Android SDK | platform **android-35**、build-tools **android-15/35.0.x**（`aapt2`、`d8`、`zipalign`、`apksigner`）|
 | Shizuku API | `onestep-app/libs/shizuku-{api,provider,aidl}.jar`（已随仓库提供）|
+| Xposed API（仅编译期） | `onestep-app/libs/xposed-api-stub.jar`（源码在 `onestep-app/xposed-stub/`，运行期由 LSPosed 提供真实类）|
 | 签名 | `onestep-app/debug.keystore`（debug 签名，仅测试用）|
-| 运行期 | 设备需安装 Shizuku（v13 验证）；KernelSU 用户态 + LKM 由 App 自带资产提供 |
+| 运行期 | 设备需安装 Shizuku（v13 验证）；KernelSU 用户态 + LKM 由 App 自带资产提供；安全补丁模块还需 LSPosed（KernelSU 模块 `zygisk_lsposed`）|
 
 ```sh
 cd onestep-app
@@ -63,3 +64,20 @@ ANDROID_SDK=$HOME/projects/android-sdk ./build.sh
 - 官方固件包（`boot.img` 等）及其中的系统镜像/内核镜像：官方未公开，且体积大；
   本仓库只保留由源码构建的产物与反汇编分析结论（见 `docs/REP-AN00_PORT.md`）；
 - 设备日志、研究过程中的大体积二进制（`*.log`、符号化后的内核 ELF 等）。
+
+## 4. 安全补丁模块（LSPosed）
+
+- 载体：与一键 APK 同一个 APK（Manifest 内 `xposedmodule` 元数据 +
+  `assets/xposed_init` → `com.ghostlock.ksuapp.PatchEntry`）；
+- 作用域：`com.hihonor.trustspace`、`com.hihonor.securityserver`、
+  `com.hihonor.parallelspace`（`com.hihonor.findmydevice` 可选）；
+- 运行期依赖：LSPosed（`v2.2.1` 实测；KernelSU 模块 `zygisk_lsposed`），
+  首次安装需在 LSPosed 管理器中启用模块并勾选上述作用域；
+- 编译期依赖：`libs/xposed-api-stub.jar`（`compileOnly` 语义，**不**打包进 APK），
+  源文件在 `xposed-stub/src/`，改 API 时执行：
+
+```sh
+cd onestep-app
+javac -d xposed-stub/classes $(find xposed-stub/src -name '*.java')
+(cd xposed-stub/classes && jar cf ../../libs/xposed-api-stub.jar .)
+```
