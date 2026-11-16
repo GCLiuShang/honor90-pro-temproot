@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.ghostlock.ksuapp">
+    package="com.ghostlock.ksuapp"
+    android:versionCode="3"
+    android:versionName="1.2.0">
 
-    <!-- Shizuku's own runtime permission. Without it the server cannot hand us
-         shell access, and the app never appears in Shizuku's authorised list. -->
+    <!-- Shizuku's own runtime permission. The server requires it both to hand us
+         shell access and to show this package in Shizuku's app list. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
     <!-- Not grantable by the user, but shell (uid 2000) can grant it: the app
@@ -47,6 +49,15 @@
             android:value="GhostLock 安全补丁：支付保护中心/平行空间的 root 检测绕过"/>
         <meta-data android:name="xposedminversion" android:value="93"/>
         <meta-data android:name="xposedscope" android:resource="@array/xposed_scope"/>
+
+        <!-- Shizuku v11.3+ lists an app before it has ever been granted anything
+             only when this metadata is present (ShizukuService.getApplications).
+             The Shizuku provider AAR declares it, but build.sh calls aapt2
+             directly and does not merge AAR manifests, so it must live here too.
+             Without it the package only shows up after requestPermission(). -->
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true"/>
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

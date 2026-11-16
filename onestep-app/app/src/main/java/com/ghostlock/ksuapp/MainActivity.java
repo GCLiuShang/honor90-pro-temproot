@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -62,10 +63,13 @@ public class MainActivity extends Activity {
     private static final int MAX_TICKS = 450;
     private static final String KIT_SCRIPT = "/data/local/tmp/run_ksu.sh";
     private static final String SHIZUKU_PKG = "moe.shizuku.privileged.api";
+    private static final String KSU_PKG = "me.weishu.kernelsu";
 
-    // 设备状态门槛（仅两项，实时判定）
+    // 设备状态门槛：开机/内存 + Shizuku 授权 + KernelSU 管理器版本
     private static final long GATE_MIN_UPTIME_S = 60;
     private static final long GATE_MIN_MEM_KB = 4L * 1024 * 1024;   // 4 GB
+    private static final String KSU_REQUIRED_VERSION = "3.3.0";
+    private static final long KSU_REQUIRED_VERSION_CODE = 32601L;
 
     // ---- 状态机 ----
     private static final int S_IDLE = 0, S_CHECK = 1, S_START = 2, S_WAIT = 3,
@@ -124,6 +128,10 @@ public class MainActivity extends Activity {
     private volatile boolean running;
     private volatile boolean busy;
     private boolean armed, askedPermission, binderHandled, polling;
+    private boolean rootGrantPending;
+    private volatile boolean a11yBootstrapping;
+    private boolean a11yWarned;
+    private int a11yCheckTick;
     private int tickNo;
     private long serverSeenAt;
     private long starterSeenAt;
@@ -148,7 +156,9 @@ public class MainActivity extends Activity {
 
         try {
             Shizuku.addBinderReceivedListenerSticky(() -> ui.post(() -> {
-                if (mode == MODE_START && armed && !binderHandled && pingBinderSafe()) {
+                if (!pingBinderSafe()) return;
+                if (shizukuGranted()) bootstrapA11y();
+                if (mode == MODE_START && armed && !binderHandled) {
                     binderHandled = true;
                     log("Shizuku 服务已就绪 (binder 推送)");
                     setStep(1, DONE);
@@ -162,10 +172,21 @@ public class MainActivity extends Activity {
                 boolean ok = grant == PackageManager.PERMISSION_GRANTED;
                 log("Shizuku 授权结果: " + (ok ? "已允许" : "被拒绝"));
                 if (ok) {
+                    if (mode == MODE_ROOT) {
+                        if (running) return;
+                        rootGrantPending = false;
+                        setStep(0, DONE);
+                        log("已获得 Shizuku 授权，继续一键越狱");
+                        bootstrapA11y();
+                        runKit();
+                        return;
+                    }
                     setStep(2, DONE);
                     permDoneAt = SystemClock.elapsedRealtime();
+                    bootstrapA11y();
                     awaitUiConfirm();
                 } else {
+                    rootGrantPending = false;
                     setStep(2, FAILED);
                     setState(S_FAIL);
                     snack("Shizuku 授权被拒绝：请到 Shizuku 应用列表里手动允许本应用");
@@ -177,10 +198,7 @@ public class MainActivity extends Activity {
         log("=== 一键 GLKS ===");
         new Thread(() -> { if (!syncPrivateKit()) log("私有套件镜像校验未通过（将影响一键越狱）"); }, "kit-sync").start();
 
-        if (!ShizukuStartService.ready() && A11yKeeper.canWrite(this)) {
-            log("检测到无障碍服务被系统关闭，正在自动恢复…");
-            A11yKeeper.restore(this);
-        }
+        repairA11yIfNeeded();
 
         if (getSharedPreferences("gl", MODE_PRIVATE).getBoolean("armed", false)) {
             armed = true;
@@ -192,6 +210,22 @@ public class MainActivity extends Activity {
 
         ui.post(timerLoop);
         ui.post(deviceLoop);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Repair independently of Shizuku: WRITE_SECURE_SETTINGS may already be
+        // granted, and MagicOS can clear the service while we are backgrounded.
+        repairA11yIfNeeded();
+        // The user may have just enabled us in Shizuku's app list; that path
+        // has no permission-result callback, so pick the grant up here.
+        if (pingBinderSafe() && shizukuGranted()) {
+            bootstrapA11y();
+            if (mode == MODE_START && busy && state == S_PERM && !running) {
+                onShizukuReady();
+            }
+        }
     }
 
     private int dp(float v) {
@@ -381,7 +415,11 @@ public class MainActivity extends Activity {
         startBtn.setStateListAnimator(null);
         startBtn.setOnClickListener(v -> {
             if (busy || running) { snack("正在执行中，请稍候"); return; }
-            if (pingBinderSafe()) { snack("Shizuku 已在运行，无需再次启动"); return; }
+            if (pingBinderSafe()) {
+                if (!shizukuGranted()) { go(MODE_START); return; }
+                snack("Shizuku 已在运行，无需再次启动");
+                return;
+            }
             if (!ShizukuStartService.ready()) {
                 snack("无障碍服务未开启：请在 设置 → 无障碍 中开启「一键GLKS」");
                 openA11ySettings();
@@ -699,6 +737,14 @@ public class MainActivity extends Activity {
         ui.post(this::rebindRows);
     }
 
+    /** 设备门槛失败：日志、任务单、状态与提示保持同一份原因。 */
+    private void failGate(int step, String why) {
+        log("拒绝执行临时 root：" + why);
+        setStep(step, FAILED);
+        setState(S_FAIL);
+        snack("设备状态不合格：" + why);
+    }
+
     /** 把当前（第一个未完成）步骤标记为失败。 */
     private void failCurrentStep() {
         int i = 0;
@@ -751,6 +797,8 @@ public class MainActivity extends Activity {
     private final Runnable deviceLoop = new Runnable() {
         @Override public void run() {
             updateDeviceInfo();
+            // 每 5s 自查一次无障碍；仅当服务确实掉线时才写设置。
+            if (++a11yCheckTick % 10 == 0) repairA11yIfNeeded();
             ui.postDelayed(this, 500);   // 实时刷新（500ms）
         }
     };
@@ -761,6 +809,39 @@ public class MainActivity extends Activity {
             while ((l = r.readLine()) != null) if (l.startsWith("kernelsu")) return true;
         } catch (Throwable ignored) { }
         return new File("/system/bin/su").exists();
+    }
+
+    /** Version of the installed KernelSU manager, or null when it is absent. */
+    private String ksuInstalledVersion() {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(KSU_PKG, 0);
+            String name = pi.versionName == null ? "未知" : pi.versionName.trim();
+            return name + " (" + pi.versionCode + ")";
+        } catch (Throwable t) {
+            return "未安装";
+        }
+    }
+
+    /** Why the installed KernelSU manager is not the required v3.3.0, or null if it is. */
+    private String ksuVersionProblem() {
+        final PackageInfo pi;
+        try {
+            pi = getPackageManager().getPackageInfo(KSU_PKG, 0);
+        } catch (Throwable t) {
+            return "未安装 KernelSU 管理器（" + KSU_PKG + "），需 v3.3.0 (32601)";
+        }
+        String name = pi.versionName == null ? "" : pi.versionName.trim();
+        if (name.startsWith("v") || name.startsWith("V")) name = name.substring(1);
+        boolean nameOk = name.equals(KSU_REQUIRED_VERSION)
+                || name.startsWith(KSU_REQUIRED_VERSION + "-")
+                || name.startsWith(KSU_REQUIRED_VERSION + "+")
+                || name.startsWith(KSU_REQUIRED_VERSION + " ");
+        if (!nameOk || pi.versionCode != KSU_REQUIRED_VERSION_CODE) {
+            return "KernelSU 版本不匹配：当前 "
+                    + (name.isEmpty() ? "未知" : name) + " (" + pi.versionCode
+                    + ")，需 v3.3.0 (" + KSU_REQUIRED_VERSION_CODE + ")";
+        }
+        return null;
     }
 
     private String memAvailableGb() {
@@ -779,6 +860,7 @@ public class MainActivity extends Activity {
     private void updateDeviceInfo() {
         final boolean a11y = ShizukuStartService.ready();
         final boolean sb = pingBinderSafe();
+        final boolean sg = sb && shizukuGranted();
         final boolean ksu = ksuLoaded();
         final String mem = memAvailableGb();
         long secs = SystemClock.elapsedRealtime() / 1000;
@@ -786,8 +868,9 @@ public class MainActivity extends Activity {
         ui.post(() -> {
             devValues[0].setText(a11y ? "已开启" : "未开启");
             devValues[0].setTextColor(a11y ? getColor(R.color.ok) : getColor(R.color.warn));
-            devValues[1].setText(sb ? "运行中" : "未运行");
-            devValues[1].setTextColor(sb ? getColor(R.color.ok) : getColor(R.color.text_secondary));
+            devValues[1].setText(!sb ? "未运行" : (sg ? "已授权" : "未授权"));
+            devValues[1].setTextColor(sg ? getColor(R.color.ok)
+                    : (sb ? getColor(R.color.warn) : getColor(R.color.text_secondary)));
             devValues[2].setText(ksu ? "已加载" : "未加载");
             devValues[2].setTextColor(ksu ? getColor(R.color.ok) : getColor(R.color.text_secondary));
             devValues[3].setText(mem);
@@ -818,8 +901,8 @@ public class MainActivity extends Activity {
     // ================================================================= 日志
 
     private static final String[] KIT_FILES = {
-            "exploit_static", "run_ksu.sh", "load_ksu.sh", "kernelsu.ko", "ksudbin",
-            "magiskpolicy", "ksu_rules", "kmsg_dumper", "stage_kit.sh"};
+            "exploit_static", "run_ksu.sh", "load_ksu.sh", "load_ko", "kernelsu.ko",
+            "ksudbin", "magiskpolicy", "ksu_rules", "kmsg_dumper", "stage_kit.sh"};
     private static final String KSU_ALIAS = "kernelsu.new.ko";
 
     private String md5Of(java.io.InputStream in) {
@@ -935,6 +1018,7 @@ public class MainActivity extends Activity {
         startRetries = 0;
         binderHandled = false;
         askedPermission = false;
+        rootGrantPending = false;
         uiRunning = false;
         starterOk = false;
         launchedShizuku = false;
@@ -964,12 +1048,22 @@ public class MainActivity extends Activity {
                 snack("Shizuku 未运行：请先点「启动 Shizuku」");
                 return;
             }
+            if (!shizukuGranted()) {
+                log("Shizuku 已连接，但本应用尚未获得授权");
+                requestRootGrant();
+                return;
+            }
             setStep(0, DONE);
             runKit();
             return;
         }
 
-        // 启动 Shizuku：需要无障碍服务来点「启动」。
+        // 启动 Shizuku：已运行且未授权时，不需要无障碍，直接走授权；
+        // 未运行时才需要无障碍服务来点 Shizuku 的「启动」。
+        if (pingBinderSafe()) {
+            startFlow();
+            return;
+        }
         if (!ShizukuStartService.ready()) {
             if (A11yKeeper.canWrite(this)) {
                 log("无障碍服务未运行（系统关闭），正在自动恢复…");
@@ -994,6 +1088,7 @@ public class MainActivity extends Activity {
         setupSteps(mode == MODE_ROOT ? STEPS_ROOT : STEPS_START);
         if (mode == MODE_ROOT) {
             if (!pingBinderSafe()) { setState(S_FAIL); return; }
+            if (!shizukuGranted()) { requestRootGrant(); return; }
             setStep(0, DONE);
             runKit();
             return;
@@ -1058,6 +1153,124 @@ public class MainActivity extends Activity {
 
     private boolean pingBinderSafe() {
         try { return Shizuku.pingBinder(); } catch (Throwable t) { return false; }
+    }
+
+    private boolean shizukuGranted() {
+        try {
+            return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) { return false; }
+    }
+
+    /**
+     * The root path used to run the gate without checking permission, so an
+     * unauthorised Shizuku surfaced as "ERR:" from the shell helper. Ask once,
+     * then also poll: granting from Shizuku's app list produces no callback.
+     */
+    private void requestRootGrant() {
+        rootGrantPending = true;
+        setState(S_PERM);
+        setStep(0, ACTIVE);
+        try {
+            log("申请 Shizuku 授权…（也可在 Shizuku 的「应用管理」里手动开启本应用）");
+            Shizuku.requestPermission(PERM_CODE);
+        } catch (Throwable t) {
+            log("requestPermission 异常: " + t);
+        }
+        awaitRootGrant(0);
+    }
+
+    private void awaitRootGrant(final int n) {
+        if (!rootGrantPending || running) return;
+        if (shizukuGranted()) {
+            rootGrantPending = false;
+            setStep(0, DONE);
+            log("已获得 Shizuku 授权");
+            bootstrapA11y();
+            runKit();
+            return;
+        }
+        if (n >= 120) {
+            rootGrantPending = false;
+            setStep(0, FAILED);
+            setState(S_FAIL);
+            snack("Shizuku 未授权：请在 Shizuku 的「应用管理」中开启本应用");
+            openShizukuApps();
+            return;
+        }
+        if (n % 10 == 0 && n > 0) log("等待 Shizuku 授权…（也可在 Shizuku 应用列表中手动开启）");
+        ui.postDelayed(() -> awaitRootGrant(n + 1), 500);
+    }
+
+    /**
+     * Fast path, called on resume and every 5 s: if the service is gone and we
+     * already hold WRITE_SECURE_SETTINGS, put it back immediately. Otherwise
+     * fall back to the Shizuku bootstrap (pm grant + direct settings write).
+     */
+    private void repairA11yIfNeeded() {
+        if (ShizukuStartService.ready()) { a11yWarned = false; return; }
+        if (A11yKeeper.canWrite(this)) {
+            if (A11yKeeper.restore(this)) {
+                a11yWarned = false;
+                log("无障碍服务未运行：已用本地 WRITE_SECURE_SETTINGS 恢复");
+                return;
+            }
+            log("无障碍服务未运行：本地恢复写入失败，尝试壳层恢复");
+            if (pingBinderSafe() && shizukuGranted() && !a11yWarned) bootstrapA11y();
+            return;
+        }
+        if (pingBinderSafe() && shizukuGranted()) {
+            // 失败后进入退避：不要每 5s 重试并重复弹提示；onResume/授权回调会重试。
+            if (!a11yWarned) bootstrapA11y();
+            return;
+        }
+        if (!a11yWarned) {
+            a11yWarned = true;
+            log("无障碍服务未运行：尚未获得 Shizuku 授权，无法自动恢复（请先在 Shizuku 中允许本应用）");
+            snack("无障碍未开启：请先在 Shizuku 中授权本应用，或手动开启无障碍");
+        }
+    }
+
+    /** Grant WRITE_SECURE_SETTINGS via Shizuku once, then self-heal a11y. */
+    private void bootstrapA11y() {
+        if (!shizukuGranted()) return;
+        if (ShizukuStartService.ready()) return;
+        if (a11yBootstrapping) return;
+        a11yBootstrapping = true;
+        new Thread(() -> {
+            boolean ok = false;
+            try { ok = A11yKeeper.ensure(MainActivity.this); }
+            finally {
+                final boolean result = ok;
+                ui.post(() -> {
+                    a11yBootstrapping = false;
+                    a11yWarned = !result;
+                    log(result
+                            ? "已通过 Shizuku 授予 WRITE_SECURE_SETTINGS 并恢复无障碍"
+                            : "无障碍自动恢复失败：pm grant 与 settings 均未成功");
+                    if (!result) {
+                        snack("无障碍自动修复失败：请检查 Shizuku 授权，或手动开启无障碍");
+                    }
+                });
+            }
+        }, "a11y-bootstrap").start();
+    }
+
+    private void openShizukuApps() {
+        try {
+            Intent i = new Intent();
+            i.setClassName(SHIZUKU_PKG,
+                    "moe.shizuku.manager.management.ApplicationManagementActivity");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Throwable t) {
+            log("打开 Shizuku 应用管理失败: " + t);
+            try {
+                Intent i = new Intent();
+                i.setClassName(SHIZUKU_PKG, "moe.shizuku.manager.MainActivity");
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            } catch (Throwable t2) { log("打开 Shizuku 失败: " + t2); }
+        }
     }
 
     private void startPolling() {
@@ -1191,6 +1404,7 @@ public class MainActivity extends Activity {
 
         if (granted) {
             log("已获得 Shizuku 授权");
+            bootstrapA11y();
             if (mode == MODE_START) setStep(2, DONE);
             permDoneAt = SystemClock.elapsedRealtime();
             awaitUiConfirm();
@@ -1218,11 +1432,23 @@ public class MainActivity extends Activity {
         stopPolling();
         mode = MODE_ROOT;
         setState(S_RUN);
-        setStep(0, DONE);
-        setStep(1, ACTIVE);
 
         new Thread(() -> {
             try {
+                // 设备门槛第 0 步：Shizuku 必须已连接且本应用已获授权。
+                // 不先检查就调用 shell，会把 SecurityException 变成 "ERR:"，
+                // 再被当成数字解析（历史上就是 NumberFormatException 的来源）。
+                if (!pingBinderSafe()) {
+                    failGate(0, "Shizuku 未运行：请先点「启动 Shizuku」");
+                    return;
+                }
+                if (!shizukuGranted()) {
+                    failGate(0, "Shizuku 未授权：请在 Shizuku 的「应用管理」中允许本应用");
+                    return;
+                }
+                setStep(0, DONE);
+                setStep(1, ACTIVE);
+
                 if (!syncPrivateKit()) {
                     log("私有套件镜像校验失败，已中止");
                     setStep(2, FAILED);
@@ -1231,25 +1457,37 @@ public class MainActivity extends Activity {
                     return;
                 }
 
-                // ---- 设备状态门槛：仅开机>=60s + 可用内存>=4GB ----
+                // ---- 设备状态门槛：KernelSU 版本 + 开机>=60s + 可用内存>=4GB ----
+                log("KernelSU 版本: " + ksuInstalledVersion());
+                String ksuWhy = ksuVersionProblem();
+                if (ksuWhy != null) {
+                    failGate(1, ksuWhy);
+                    return;
+                }
+
                 String gate = rikka.shizuku.ShizukuShellHelper.run(
                         "u=$(cut -d. -f1 /proc/uptime 2>/dev/null); " +
-                        "m=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}'); " +
-                        "echo \"$u $m\"").trim();
+                        "m=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null); " +
+                        "printf '%s %s\\n' \"$u\" \"$m\"").trim();
                 log("设备门槛: " + gate);
                 String why = null;
-                try {
+                if (gate.startsWith("ERR:")) {
+                    why = "通过 Shizuku 读取设备状态失败：" + gate.substring(4).trim();
+                } else if (!gate.matches("\\d+\\s+\\d+")) {
+                    why = "无法解析设备状态输出：" + (gate.isEmpty() ? "(空)" : gate);
+                } else {
                     String[] gp = gate.split("\\s+");
-                    long u = Long.parseLong(gp[0]), m = Long.parseLong(gp[1]);
-                    if (u < GATE_MIN_UPTIME_S) why = "开机仅 " + u + "s（需 ≥ " + GATE_MIN_UPTIME_S + "s）";
-                    else if (m < GATE_MIN_MEM_KB) why = String.format(Locale.US,
-                            "可用内存仅 %.1f GB（需 ≥ 4 GB）", m / 1048576f);
-                } catch (Throwable e) { why = "读取设备状态失败: " + e; }
+                    try {
+                        long u = Long.parseLong(gp[0]), m = Long.parseLong(gp[1]);
+                        if (u < GATE_MIN_UPTIME_S) why = "开机仅 " + u + "s（需 ≥ " + GATE_MIN_UPTIME_S + "s）";
+                        else if (m < GATE_MIN_MEM_KB) why = String.format(Locale.US,
+                                "可用内存仅 %.1f GB（需 ≥ 4 GB）", m / 1048576f);
+                    } catch (NumberFormatException e) {
+                        why = "设备状态数值超出范围：" + gate;
+                    }
+                }
                 if (why != null) {
-                    log("拒绝执行临时 root：" + why);
-                    setStep(1, FAILED);
-                    setState(S_FAIL);
-                    snack("设备状态不合格：" + why);
+                    failGate(1, why);
                     return;
                 }
                 setStep(1, DONE);

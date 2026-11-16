@@ -39,7 +39,7 @@ if [ $fail -ne 0 ]; then
   exit 1
 fi
 
-chmod 755 $D/exploit_static $D/run_ksu.sh $D/load_ksu.sh $D/ksudbin \
+chmod 755 $D/exploit_static $D/run_ksu.sh $D/load_ksu.sh $D/load_ko $D/ksudbin \
           $D/magiskpolicy $D/kmsg_dumper 2>/dev/null
 chmod 644 $D/kernelsu.ko $D/ksu_rules $D/kernelsu.new.ko 2>/dev/null
 echo KIT_OK

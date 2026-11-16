@@ -23,10 +23,13 @@ for f in kernelsu.ko ksudbin magiskpolicy kmsg_dumper; do
   [ -f "deps/$f" ] || { echo "missing deps/$f" >&2; exit 1; }
 done
 
+[ -f ../ksu/tools/load_ko ] || { echo "missing ../ksu/tools/load_ko" >&2; exit 1; }
+
 cp -f "$EXPLOIT"          "$D/exploit_static"
 cp -f deps/kernelsu.ko    "$D/kernelsu.ko"
 cp -f deps/ksudbin        "$D/ksudbin"
 cp -f deps/magiskpolicy   "$D/magiskpolicy"
 cp -f deps/kmsg_dumper    "$D/kmsg_dumper"
-chmod 755 "$D"/exploit_static "$D"/ksudbin "$D"/magiskpolicy "$D"/kmsg_dumper
+cp -f ../ksu/tools/load_ko "$D/load_ko"
+chmod 755 "$D"/exploit_static "$D"/load_ko "$D"/ksudbin "$D"/magiskpolicy "$D"/kmsg_dumper
 echo "assets ready: $(md5sum "$D"/exploit_static | cut -d' ' -f1) exploit_static"

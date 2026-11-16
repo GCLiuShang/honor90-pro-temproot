@@ -34,6 +34,23 @@ public final class ShizukuShellHelper {
         return (Process) method().invoke(null, new String[]{"sh", "-c", cmd}, null, null);
     }
 
+    /**
+     * Reflection wraps the real failure in InvocationTargetException, whose
+     * toString() is just "java.lang.reflect.InvocationTargetException". Walk
+     * the cause chain so the UI can say "SecurityException: Permission
+     * Denial: newProcess ... requires permission" instead of "ERR:".
+     */
+    private static String describe(Throwable t) {
+        Throwable c = t;
+        for (int i = 0; i < 8 && c.getCause() != null && c.getCause() != c; i++) {
+            c = c.getCause();
+        }
+        String msg = c.getMessage();
+        String name = c.getClass().getSimpleName();
+        if (name.isEmpty()) name = c.getClass().getName();
+        return msg == null || msg.isEmpty() ? name : name + ": " + msg;
+    }
+
     /** Runs a short command and returns everything it printed. */
     public static String run(String cmd) {
         StringBuilder sb = new StringBuilder();
@@ -47,7 +64,7 @@ public final class ShizukuShellHelper {
             p.waitFor();
             while ((n = er.read(buf)) > 0) sb.append(new String(buf, 0, n));
         } catch (Throwable t) {
-            sb.append("ERR: ").append(t).append('\n');
+            sb.append("ERR: ").append(describe(t)).append('\n');
         }
         return sb.toString();
     }
@@ -67,7 +84,7 @@ public final class ShizukuShellHelper {
             p.waitFor();
             sink.accept("[exit=" + p.exitValue() + "]");
         } catch (Throwable t) {
-            sink.accept("ERR: " + t);
+            sink.accept("ERR: " + describe(t));
         }
     }
 }
